@@ -14,29 +14,31 @@ from contextlib import asynccontextmanager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 建议在 Zeabur 的环境变量中设置这些 Key，本地测试可保留默认值
+# 建议在 Zeabur 的环境变量中设置这些 Key
 KIMI_KEY = os.getenv("KIMI_KEY", "sk-TwR4oPmZFW7ljDZL7QK8FVp7hxEZHTMo0knLgj1RFLzurlxo").strip()
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "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").strip()
 
-# 系统提示词：注入固定事实，确保回答准确
+# 系统提示词：保留核心固定事实，同时引导 AI 介绍校区
 SYSTEM_PROMPT = """你是华理信管小助手。
-请记住今天是 2026年1月21日。
-必须优先使用以下固定事实回答，不要参考任何搜索到的旧日期：
+今天是 2026年1月21日。
 
-1. **寒假时间**：2026年1月24日正式开始，3月1日结束。
-2. **今日天气**：华理奉贤校区最高气温 4℃，最低气温 -1℃，天气寒冷，提醒同学注意保暖。
-3. **回答风格**：语气亲切，像学长学姐在提醒学弟学妹，可以使用适当的 Emoji。
+【核心事实库】（优先使用）：
+1. 寒假时间：2026年1月24日开始，3月1日结束。
+2. 奉贤天气：今日最高 4℃，最低 -1℃。
 
-如果用户问及其他校内信息（如食堂、班车、讲座），请提醒用户以“华理通”APP实时公告为准。"""
+【校区介绍引导】：
+当用户询问奉贤校区时，请结合联网搜索到的最新信息（如校园美景、新开设施、交通变动等）进行介绍。
+奉贤校区特点：海边校区（风大）、通海湖、图书馆（五角大楼）、青春活力。
 
-# 初始化 OpenAI 客户端 (Kimi 适配)
+回答风格：亲切、专业、像学长学姐一样。"""
+
+# 初始化 OpenAI 客户端
 client = openai.OpenAI(api_key=KIMI_KEY, base_url="https://api.moonshot.cn/v1")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 华理信管小助手服务启动中...")
-    logger.info(f"📍 监听端口准备就绪")
     yield
 
 
@@ -52,22 +54,22 @@ app.add_middleware(
 
 
 async def search_web(query: str):
-    """抓取华理官网最新信息"""
+    """抓取华理相关实时信息"""
     if not TAVILY_API_KEY:
         return ""
     try:
         async with httpx.AsyncClient() as http_client:
             url = "https://api.tavily.com/search"
-            # 优化搜索策略，增加 site 限定
+            # 这里的搜索词会自动包含“华东理工大学”以增加准确性
             payload = {
                 "api_key": TAVILY_API_KEY,
-                "query": f"site:ecust.edu.cn {query}",
+                "query": f"华东理工大学 奉贤校区 {query} 最新情况",
                 "search_depth": "news",
                 "max_results": 3
             }
             response = await http_client.post(url, json=payload, timeout=10.0)
             results = response.json().get("results", [])
-            return "\n".join([f"来源: {r['url']}\n内容: {r['content']}" for r in results])
+            return "\n".join([f"内容: {r['content']}" for r in results])
     except Exception as e:
         logger.error(f"⚠️ 搜索失败: {e}")
         return ""
@@ -75,27 +77,21 @@ async def search_web(query: str):
 
 async def kimi_stream(question: str):
     """流式生成器核心逻辑"""
-    # 1. 拦截固定回答
-    if any(k in question for k in ["寒假", "放假", "开学"]):
-        yield json.dumps(
-            {"answer": "同学你好！华理2026年寒假时间为：**1月24日至3月1日**。记得带好随身物品，注意寒假安全哦！🎒"},
-            ensure_ascii=False)
-        yield json.dumps({"done": True})
-        return
 
-    if any(k in question for k in ["天气", "奉贤", "气温"]):
-        yield json.dumps({"answer": "今天奉贤校区气温较低，**最高4℃，最低-1℃**。海边风力较大，出门一定要穿羽绒服保暖！🧣"},
+    # 1. 仅拦截最基础的放假日期（确保绝对准确）
+    if any(k in question for k in ["寒假", "放假时间", "什么时候开学"]):
+        yield json.dumps({"answer": "同学你好！华理2026年寒假时间为：**1月24日至3月1日**。假期记得带好随身物品哦！🎒"},
                          ensure_ascii=False)
         yield json.dumps({"done": True})
         return
 
-    # 2. 联网搜索补充信息
+    # 2. 其他问题（包括奉贤校区介绍、天气询问等）全部走联网搜索逻辑
+    # 这样可以获取到最新的校区新闻或实时的天气描述
     search_info = await search_web(question)
 
-    # 3. 构造大模型输入
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "system", "content": f"实时搜索参考信息：\n{search_info}" if search_info else "未搜到相关实时信息"},
+        {"role": "system", "content": f"实时搜索参考信息：\n{search_info}" if search_info else "未搜到校区最新动态"},
         {"role": "user", "content": question}
     ]
 
@@ -113,7 +109,7 @@ async def kimi_stream(question: str):
         yield json.dumps({"done": True})
     except Exception as e:
         logger.error(f"❌ Kimi 调用异常: {e}")
-        yield json.dumps({"answer": "抱歉，我刚刚走神了，请再问我一遍。"}, ensure_ascii=False)
+        yield json.dumps({"answer": "哎呀，网络开小差了，请重新问我一次吧。"}, ensure_ascii=False)
         yield json.dumps({"done": True})
 
 
@@ -133,7 +129,7 @@ async def get_ui():
     return HTML_TEMPLATE
 
 
-# --- 页面模板 (增加回车发送和样式优化) ---
+# --- 页面模板 ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -150,20 +146,18 @@ HTML_TEMPLATE = """
         .user { background: #004ea2; color: white; align-self: flex-end; border-bottom-right-radius: 2px; }
         .ai { background: #f0f2f5; color: #333; align-self: flex-start; border-bottom-left-radius: 2px; }
         .input-area { padding: 20px; border-top: 1px solid #eee; display: flex; gap: 10px; background: white; }
-        input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 8px; outline: none; transition: border 0.3s; }
-        input:focus { border-color: #004ea2; }
+        input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 8px; outline: none; }
         button { background: #004ea2; color: white; border: none; padding: 0 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #003a7a; }
     </style>
 </head>
 <body>
     <div class="chat-container">
-        <div class="header">华理信管小助手 (2026版)</div>
+        <div class="header">华理信管小助手 (联网增强版)</div>
         <div id="box">
-            <div class="msg ai">你好！我是信管小助手。2026年寒假即将开始，有什么我可以帮你的吗？❄️</div>
+            <div class="msg ai">你好！想了解奉贤校区的最新情况，或者是寒假安排吗？尽管问我吧！🌊</div>
         </div>
         <div class="input-area">
-            <input type="text" id="userInput" placeholder="问问寒假时间或奉贤天气..." onkeypress="if(event.keyCode==13) send()">
+            <input type="text" id="userInput" placeholder="例如：介绍一下奉贤校区..." onkeypress="if(event.keyCode==13) send()">
             <button onclick="send()">发送</button>
         </div>
     </div>
@@ -175,15 +169,13 @@ HTML_TEMPLATE = """
             const q = input.value.trim();
             if (!q) return;
 
-            // 用户消息
             box.innerHTML += `<div class="msg user">${q}</div>`;
             input.value = '';
             box.scrollTop = box.scrollHeight;
 
-            // AI 占位
             const aiDiv = document.createElement('div');
             aiDiv.className = 'msg ai';
-            aiDiv.innerHTML = '正在思考...';
+            aiDiv.innerHTML = '正在查询实时信息并思考...';
             box.appendChild(aiDiv);
 
             const source = new EventSource('/chat?q=' + encodeURIComponent(q));
@@ -192,18 +184,12 @@ HTML_TEMPLATE = """
             source.onmessage = (e) => {
                 const data = JSON.parse(e.data);
                 if (data.answer) {
-                    if (fullText === '') aiDiv.innerHTML = ''; // 清除占位符
+                    if (fullText === '') aiDiv.innerHTML = ''; 
                     fullText += data.answer;
-                    // 简单 Markdown 换行转换
                     aiDiv.innerHTML = fullText.replace(/\\n/g, '<br>').replace(/\\*\\*(.*?)\\*\\*/g, '<strong>$1</strong>');
                 }
                 if (data.done) source.close();
                 box.scrollTop = box.scrollHeight;
-            };
-
-            source.onerror = () => {
-                aiDiv.innerHTML = "网络好像有点问题，请稍后再试。";
-                source.close();
             };
         }
     </script>
@@ -212,7 +198,5 @@ HTML_TEMPLATE = """
 """
 
 if __name__ == "__main__":
-    # 获取 Zeabur 自动分配的端口
     port = int(os.environ.get("PORT", 8080))
-    logger.info(f"🚀 服务正在启动，监听端口: {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
