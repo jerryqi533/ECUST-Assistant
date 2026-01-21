@@ -1,173 +1,160 @@
 import os
-import json
 import logging
+from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse
 import httpx
 import uvicorn
-import openai
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
-from sse_starlette.sse import EventSourceResponse
-from contextlib import asynccontextmanager
 
-# --- 配置与日志 ---
+# --- 配置日志 ---
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("ECUST_Assistant")
 
-# 从环境变量获取 Key
-KIMI_KEY = os.getenv("KIMI_KEY", "sk-TwR4oPmZFW7ljDZL7QK8FVp7hxEZHTMo0knLgj1RFLzurlxo").strip()
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "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").strip()
+app = FastAPI(title="华理信管小助手-联网增强版")
 
-SYSTEM_PROMPT = """你是华理信管小助手。今天是 2026年1月20日。
-【背景知识】：
-1. 寒假安排：2026年1月24日放假，3月1日开学。
-2. 奉贤校区：位于海边，标志建筑是“五角大楼”图书馆，通海湖很美。
-【指令】：
-- 奉贤校区介绍：结合联网信息，介绍其地理位置、建筑特色、校园氛围（青春、风大、安静）。
-- 语气：热情、学长口吻、多用 Emoji。"""
+# --- 环境变量读取 ---
+MOONSHOT_API_KEY = os.getenv("MOONSHOT_API_KEY")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
-client = openai.OpenAI(api_key=KIMI_KEY, base_url="https://api.moonshot.cn/v1")
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("🚀 华理小助手已启动")
-    yield
-
-
-app = FastAPI(lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-
-async def search_web(query: str):
-    """优化后的搜索逻辑，增加了容错和超时处理"""
-    if not TAVILY_API_KEY: return "无联网权限"
-    try:
-        async with httpx.AsyncClient() as http_client:
-            # 针对奉贤校区进行搜索词优化
-            search_query = f"华东理工大学 奉贤校区 {query} 最新情况 校园导览"
-            response = await http_client.post(
-                "https://api.tavily.com/search",
-                json={"api_key": TAVILY_API_KEY, "query": search_query, "max_results": 3},
-                timeout=8.0  # 稍微缩短超时，避免长时间挂起
-            )
-            data = response.json()
-            return "\n".join([r['content'] for r in data.get("results", [])])
-    except Exception as e:
-        logger.warning(f"搜索接口波动: {e}")
-        return "暂未获取到实时校区新闻，将基于校友经验回答。"
-
-
-async def kimi_stream(question: str):
-    """流式生成器：增加分类判断提高响应速度"""
-
-    # 快速拦截：如果是简单的放假询问，不走搜索直接回答
-    if any(k in question for k in ["寒假", "放假", "开学"]):
-        yield json.dumps({"answer": "同学你好！华理2026年寒假时间：**1月24日 - 3月1日**。祝你假期愉快！✈️"},
-                         ensure_ascii=False)
-        yield json.dumps({"done": True})
-        return
-
-    # 联网获取最新信息
-    context = await search_web(question)
-
-    try:
-        stream = client.chat.completions.create(
-            model="moonshot-v1-8k",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "system", "content": f"实时参考信息：{context}"},
-                {"role": "user", "content": question}
-            ],
-            stream=True,
-            timeout=15.0
-        )
-        for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield json.dumps({"answer": chunk.choices[0].delta.content}, ensure_ascii=False)
-        yield json.dumps({"done": True})
-    except Exception as e:
-        logger.error(f"API 报错: {e}")
-        yield json.dumps(
-            {"answer": "哎呀，网络波动中... 刚才说到奉贤校区，它可是著名的'海边大学'，风真的很大！建议你再问我一次~"},
-            ensure_ascii=False)
-        yield json.dumps({"done": True})
-
-
-@app.get("/")
-async def root(): return RedirectResponse(url="/chat-ui")
-
-
-@app.get("/chat")
-async def chat(q: str): return EventSourceResponse(kimi_stream(q))
-
-
-@app.get("/chat-ui", response_class=HTMLResponse)
-async def get_ui(): return HTML_TEMPLATE
-
-
+# --- 前端 HTML 模板 ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>华理信管小助手</title>
+    <title>华理信管小助手 - 联网增强版</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { font-family: sans-serif; background: #f0f2f5; margin: 0; display: flex; justify-content: center; }
-        .chat-container { width: 100%; max-width: 500px; background: white; height: 100vh; display: flex; flex-direction: column; }
-        .header { background: #004ea2; color: white; padding: 15px; text-align: center; font-weight: bold; }
-        #box { flex: 1; overflow-y: auto; padding: 20px; }
-        .msg { margin-bottom: 15px; padding: 10px 15px; border-radius: 10px; line-height: 1.5; font-size: 15px; }
-        .ai { background: #f0f2f5; align-self: flex-start; }
-        .user { background: #004ea2; color: white; align-self: flex-end; margin-left: 15%; }
-        .input-area { padding: 15px; border-top: 1px solid #ddd; display: flex; }
-        input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px; outline: none; }
-        button { background: #004ea2; color: white; border: none; padding: 0 15px; margin-left: 5px; border-radius: 5px; }
+        :root { --primary-color: #004098; --bg-color: #f4f7f9; --chat-bg: #ffffff; --user-msg: #e3f2fd; --ai-msg: #f1f3f4; }
+        body, html { height: 100%; margin: 0; font-family: 'PingFang SC', sans-serif; background-color: var(--bg-color); }
+        .container { max-width: 800px; margin: 0 auto; height: 100vh; display: flex; flex-direction: column; background: white; }
+        header { background: var(--primary-color); color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; }
+        #chat-window { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; border-bottom: 1px solid #eee; }
+        .message { max-width: 85%; padding: 12px 16px; border-radius: 12px; line-height: 1.6; word-wrap: break-word; }
+        .user-message { align-self: flex-end; background-color: var(--user-msg); color: #1a237e; border-bottom-right-radius: 2px; }
+        .ai-message { align-self: flex-start; background-color: var(--ai-msg); color: #333; border-bottom-left-radius: 2px; white-space: pre-wrap; }
+        .status-indicator { font-size: 0.8rem; color: #666; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+        .input-area { padding: 20px; display: flex; gap: 10px; background: #fff; }
+        input[type="text"] { flex: 1; padding: 12px 18px; border: 1px solid #ddd; border-radius: 25px; outline: none; font-size: 1rem; }
+        input[type="text"]:focus { border-color: var(--primary-color); }
+        button { background: var(--primary-color); color: white; border: none; width: 45px; height: 45px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
+        button:hover { opacity: 0.9; transform: scale(1.05); }
+        .dots span { display: inline-block; width: 6px; height: 6px; background: #999; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out; }
+        .dots span:nth-child(2) { animation-delay: 0.2s; }
+        .dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }
     </style>
 </head>
 <body>
-    <div class="chat-container">
-        <div class="header">华理信管小助手 (联网增强版)</div>
-        <div id="box"></div>
-        <div class="input-area">
-            <input type="text" id="userInput" placeholder="问问奉贤校区介绍..." onkeypress="if(event.keyCode==13) send()">
-            <button onclick="send()">发送</button>
-        </div>
+<div class="container">
+    <header>
+        <div><i class="fas fa-university"></i> 华理信管小助手 <small style="font-size:0.7rem; opacity:0.8;">V2.0</small></div>
+        <div style="font-size: 0.8rem;"><i class="fas fa-globe"></i> 联网模式</div>
+    </header>
+    <div id="chat-window">
+        <div class="message ai-message">你好！我是联网增强版小助手。你可以问我关于华理的任何信息（如：最新的寒假安排、校园生活指南等）。</div>
     </div>
-    <script>
-        const box = document.getElementById('box');
-        async function send() {
-            const input = document.getElementById('userInput');
-            const q = input.value.trim();
-            if(!q) return;
-            box.innerHTML += `<div style="display:flex;flex-direction:column"><div class="msg user">${q}</div></div>`;
-            input.value = '';
-            const aiDiv = document.createElement('div');
-            aiDiv.className = 'msg ai';
-            aiDiv.innerHTML = '正在为您搜集奉贤校区资料...';
-            box.appendChild(aiDiv);
-            box.scrollTop = box.scrollHeight;
-
-            const source = new EventSource('/chat?q=' + encodeURIComponent(q));
-            let fullText = '';
-            source.onmessage = (e) => {
-                const data = JSON.parse(e.data);
-                if(data.answer) {
-                    if(fullText === '') aiDiv.innerHTML = '';
-                    fullText += data.answer;
-                    aiDiv.innerHTML = fullText.replace(/\\n/g, '<br>').replace(/\\*\\*(.*?)\\*\\*/g, '<b>$1</b>');
-                }
-                if(data.done) source.close();
-                box.scrollTop = box.scrollHeight;
-            };
-            source.onerror = () => { source.close(); };
+    <div class="input-area">
+        <input type="text" id="userInput" placeholder="输入您的问题..." onkeypress="if(event.keyCode==13) sendMessage()">
+        <button id="sendBtn" onclick="sendMessage()"><i class="fas fa-paper-plane"></i></button>
+    </div>
+</div>
+<script>
+    const chatWindow = document.getElementById('chat-window');
+    const userInput = document.getElementById('userInput');
+    async function sendMessage() {
+        const text = userInput.value.trim();
+        if (!text) return;
+        appendMsg(text, 'user-message');
+        userInput.value = '';
+        const loadingId = appendLoading();
+        try {
+            const res = await fetch(`/chat?q=${encodeURIComponent(text)}`);
+            const data = await res.json();
+            removeEl(loadingId);
+            appendMsg(data.answer, 'ai-message');
+        } catch (e) {
+            removeEl(loadingId);
+            appendMsg("❌ 抱歉，连接服务器失败。", 'ai-message');
         }
-    </script>
+    }
+    function appendMsg(content, cls) {
+        const d = document.createElement('div');
+        d.className = `message ${cls}`;
+        d.innerText = content;
+        chatWindow.appendChild(d);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+    function appendLoading() {
+        const id = 'l-' + Date.now();
+        const d = document.createElement('div');
+        d.id = id; d.className = 'message ai-message';
+        d.innerHTML = '<div class="status-indicator"><i class="fas fa-search fa-spin"></i> 正在联网并思考...</div><div class="dots"><span></span><span></span><span></span></div>';
+        chatWindow.appendChild(d);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+        return id;
+    }
+    function removeEl(id) { document.getElementById(id)?.remove(); }
+</script>
 </body>
 </html>
 """
 
+
+@app.get("/", response_class=HTMLResponse)
+async def read_root():
+    return HTML_TEMPLATE
+
+
+@app.get("/chat")
+async def chat(q: str = Query(...)):
+    # 1. 检查环境变量
+    if not MOONSHOT_API_KEY or not TAVILY_API_KEY:
+        return {"answer": "🔧 系统配置错误：请检查环境变量中的 API Keys。"}
+
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        # 2. 强制执行联网搜索
+        search_context = ""
+        try:
+            search_res = await client.post(
+                "https://api.tavily.com/search",
+                json={"api_key": TAVILY_API_KEY, "query": q, "max_results": 3}
+            )
+            if search_res.status_code == 200:
+                results = search_res.json().get("results", [])
+                search_context = "\n".join([f"内容:{r['content']}" for r in results])
+        except Exception as e:
+            logger.error(f"Search error: {e}")
+
+        # 3. 调用 Moonshot API
+        try:
+            response = await client.post(
+                "https://api.moonshot.cn/v1/chat/completions",
+                headers={"Authorization": f"Bearer {MOONSHOT_API_KEY}"},
+                json={
+                    "model": "moonshot-v1-8k",
+                    "messages": [
+                        {"role": "system", "content": f"你是华理小助手。请结合以下资料回答：{search_context}"},
+                        {"role": "user", "content": q}
+                    ],
+                    "temperature": 0.3
+                }
+            )
+
+            if response.status_code == 401:
+                return {"answer": "❌ 认证失败 (401)：请检查并更新 MOONSHOT_API_KEY。"}
+
+            if response.status_code != 200:
+                return {"answer": f"⚠️ API 返回错误 (HTTP {response.status_code})"}
+
+            data = response.json()
+            return {"answer": data['choices'][0]['message']['content']}
+
+        except Exception as e:
+            return {"answer": f"⚠️ 发生预期外错误: {str(e)}"}
+
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
+    # Zeabur 部署必须使用 0.0.0.0 和从环境获取的端口
+    port = int(os.getenv("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
