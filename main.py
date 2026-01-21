@@ -23,11 +23,15 @@ KIMI_KEY = os.getenv("KIMI_KEY", "").strip()
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
 SIMULATION_MODE = not bool(KIMI_KEY)
 
-SYSTEM_PROMPT = """你是华理信管小助手。
-1. 必须基于提供的实时联网信息回答。
-2. 今天的日期是 2026年1月21日。请忽略任何 2025年及以前的过时讲座。
-3. 直接列出未来三天的讲座名称、时间、地点。
-4. 不要解释你的搜索过程（不要说“我将为你查询”等），直接给出结果。"""
+SYSTEM_PROMPT = """你是华东理工大学信管小助手。
+请记住今天是 2026年1月21日，正值寒假前夕。
+
+回答规则：
+1. **口吻自然**：像学长学姐一样交流，可以用“同学你好”、“建议去看看”等词汇。
+2. **智能分类**：根据搜索结果，将信息分为【学术讲座】、【校园新闻】、【生活提醒】。
+3. **拒绝陈旧**：绝对不要提到 2025 年及以前的信息。
+4. **贴心建议**：如果正值寒假，提醒同学注意校车时间表或食堂开关门时间。
+5. **简洁有力**：不要解释搜索过程，直接给干货。"""
 
 if not SIMULATION_MODE:
     client = openai.OpenAI(api_key=KIMI_KEY, base_url="https://api.moonshot.cn/v1")
@@ -168,5 +172,6 @@ HTML_TEMPLATE = """
 """
 
 if __name__ == "__main__":
-    # 使用 8005 端口防止占用
-    uvicorn.run(app, host="0.0.0.0", port=8005)
+    # 获取 Zeabur 自动分配的端口，如果没有则默认 8080
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
