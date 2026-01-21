@@ -23,15 +23,14 @@ KIMI_KEY = os.getenv("KIMI_KEY", "").strip()
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
 SIMULATION_MODE = not bool(KIMI_KEY)
 
-SYSTEM_PROMPT = """你是华东理工大学信管小助手。
-请记住今天是 2026年1月21日，正值寒假前夕。
+SYSTEM_PROMPT = """你是华理信管小助手。
+请直接使用以下固定信息回答，不要参考任何搜索到的旧日期：
 
-回答规则：
-1. **口吻自然**：像学长学姐一样交流，可以用“同学你好”、“建议去看看”等词汇。
-2. **智能分类**：根据搜索结果，将信息分为【学术讲座】、【校园新闻】、【生活提醒】。
-3. **拒绝陈旧**：绝对不要提到 2025 年及以前的信息。
-4. **贴心建议**：如果正值寒假，提醒同学注意校车时间表或食堂开关门时间。
-5. **简洁有力**：不要解释搜索过程，直接给干货。"""
+1. **寒假时间**：2026年1月24日正式开始，3月1日结束。
+2. **今日天气**：华理奉贤校区最高气温 4℃，最低气温 -1℃，天气寒冷，提醒同学注意保暖。
+3. **回答风格**：语气要亲切，像学长学姐在提醒学弟学妹。
+
+如果用户问及其他校内信息（如食堂、班车），请提醒用户以“华理通”APP实时公告为准。"""
 
 if not SIMULATION_MODE:
     client = openai.OpenAI(api_key=KIMI_KEY, base_url="https://api.moonshot.cn/v1")
@@ -66,6 +65,14 @@ async def search_web(query: str):
 
 async def kimi_stream(question: str):
     """强制联网搜索的流式生成器"""
+    # 如果问题包含关键词，直接给出你设定的标准答案
+    if "寒假" in question or "放假" in question:
+        yield "同学你好！华理2026年寒假时间已经确定为：**1月24日至3月1日**。假期记得带好随身物品，注意安全哦！"
+        return
+
+    if "天气" in question or "奉贤" in question:
+        yield "今天奉贤校区气温较低，**最高4℃，最低-1℃**。海边风大，出门一定要加件厚衣服！"
+        return
     try:
         if SIMULATION_MODE:
             # ... 模拟模式保持不变 ...
@@ -75,7 +82,7 @@ async def kimi_stream(question: str):
         logger.info(f"🔍 正在执行全量搜索: {question}")
 
         # 将之前的强制关键词改为更灵活的组合
-        refined_query = f"华东理工大学 2026年1月 {question} 最新公告 寒假安排"
+        refined_query = f"site:ecust.edu.cn 2026 寒假 安排 通知"
 
         # 2. 调用搜索函数时，使用这个 refined_query 而不是原始的 question
         search_info = await search_web(refined_query)
@@ -172,6 +179,8 @@ HTML_TEMPLATE = """
 """
 
 if __name__ == "__main__":
-    # 获取 Zeabur 自动分配的端口，如果没有则默认 8080
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    import os
+    # 这一步至关重要，Zeabur 必须读取环境变量中的 PORT
+    current_port = int(os.environ.get("PORT", 8080))
+    logger.info(f"正在监听端口: {current_port}")
+    uvicorn.run(app, host="0.0.0.0", port=current_port)
