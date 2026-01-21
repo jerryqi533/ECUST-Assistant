@@ -30,7 +30,7 @@ SYSTEM_PROMPT = """你是华理信管小助手。
 4. 不要解释你的搜索过程（不要说“我将为你查询”等），直接给出结果。"""
 
 if not SIMULATION_MODE:
-    client = openai.OpenAI(api_key=KIMI_KEY, base_url="https://api.moonshot.cn/v1")git --version
+    client = openai.OpenAI(api_key=KIMI_KEY, base_url="https://api.moonshot.cn/v1")
 
 
 @asynccontextmanager
