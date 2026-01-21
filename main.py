@@ -75,7 +75,7 @@ async def kimi_stream(question: str):
         logger.info(f"🔍 正在执行全量搜索: {question}")
 
         # 将之前的强制关键词改为更灵活的组合
-        refined_query = f"华东理工大学 2026 {question} 官网通知 最新"
+        refined_query = f"华东理工大学 2026年1月 {question} 最新公告 寒假安排"
 
         # 2. 调用搜索函数时，使用这个 refined_query 而不是原始的 question
         search_info = await search_web(refined_query)
